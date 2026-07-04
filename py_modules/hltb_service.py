@@ -9,8 +9,10 @@ import ssl
 import time
 import urllib.request
 import urllib.error
+import gzip
 from typing import Optional, Dict, Any, List
 from difflib import SequenceMatcher
+import logging
 
 # Create SSL context that doesn't verify certificates (Steam Deck may have cert issues)
 SSL_CONTEXT = ssl.create_default_context()
@@ -18,47 +20,74 @@ SSL_CONTEXT.check_hostname = False
 SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 # Use Decky's built-in logger
-import decky
-logger = decky.logger
+# import decky
+# logger = decky.logger
 
+logger = logging.getLogger(__name__)
 
 class HLTBService:
     def __init__(self):
         self.min_similarity = 0.7  # Minimum similarity threshold
         self.base_url = "https://howlongtobeat.com"
-        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        # Use Firefox User-Agent to match the working example
+        self.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0"
+        
+        # Cookie from get-auth example (contains session tokens)
+        self.base_cookie = "OptanonConsent=isGpcEnabled=1&datestamp=Sat+Jul+04+2026+15%3A29%3A08+GMT-0700+(Pacific+Daylight+Time)&version=202604.2.0&consentId=0811192f-59da-4c3c-aef1-8e5208f252f8&GPPCookiesCount=1&groups=C0001%3A1%2CC0002%3A1%2COSSTA_BG%3A0%2CC0004%3A0&crTime=1783204148972&genVendors=&landingPath=NotLandingPage; OTGPPConsent=DBABLA~BVQVAAAAAACA.YA; usprivacy=1YYY; opt_out=1; zd_core_lialready=true; OptanonAlertBoxClosed=2026-07-04T22:29:08.641Z"
+        
+        # Dynamic auth values (will be fetched from API)
         self.auth_token = None
+        self.hp_key = None
+        self.hp_val = None
         self.token_timestamp = 0
 
-    def _calculate_similarity(self, str1: str, str2: str) -> float:
-        """Calculate string similarity using SequenceMatcher"""
-        return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
-
-    def _get_auth_token_sync(self) -> Optional[str]:
-        """Get auth token from HLTB finder/init endpoint"""
+    def _get_auth_data_sync(self) -> Optional[Dict[str, str]]:
+        """Get dynamic auth data from HLTB init endpoint"""
         try:
             timestamp = int(time.time() * 1000)
-            init_url = f"{self.base_url}/api/finder/init?t={timestamp}"
+            init_url = f"{self.base_url}/api/bleed/init?t={timestamp}"
 
             headers = {
                 "User-Agent": self.user_agent,
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Prefer": "safe",
                 "Referer": f"{self.base_url}/",
-                "Origin": self.base_url,
-                "Accept": "application/json",
+                "Cookie": self.base_cookie,
+                "DNT": "1",
+                "Sec-GPC": "1",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+                "Pragma": "no-cache",
             }
 
             req = urllib.request.Request(init_url, headers=headers)
 
             with urllib.request.urlopen(req, timeout=10, context=SSL_CONTEXT) as response:
                 result = json.loads(response.read().decode('utf-8'))
-                token = result.get('token')
-                if token:
-                    return token
+                
+                auth_token = result.get('token')
+                hp_key = result.get('hpKey')
+                hp_val = result.get('hpVal')
+                
+                if auth_token and hp_key and hp_val:
+                    logger.info(f"Got fresh HLTB auth data (key: {hp_key})")
+                    return {
+                        "token": auth_token,
+                        "hp_key": hp_key,
+                        "hp_val": hp_val
+                    }
 
         except Exception as e:
-            logger.error(f"Failed to get HLTB auth token: {e}")
+            logger.error(f"Failed to get HLTB auth data: {e}")
 
         return None
+
+    def _calculate_similarity(self, str1: str, str2: str) -> float:
+        """Calculate string similarity using SequenceMatcher"""
+        return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
 
     def _sanitize_game_name(self, game_name: str) -> str:
         """Sanitize game name for better HLTB search matching.
@@ -89,32 +118,52 @@ class HLTBService:
         return result
 
     def _search_sync(self, game_name: str) -> Optional[Dict[str, Any]]:
-        """Synchronous HLTB search"""
+        """Synchronous HLTB search using /api/bleed endpoint"""
         try:
-            # Get fresh auth token (tokens may expire)
+            # Get fresh auth data if not available or expired (refresh every 10 minutes)
             current_time = time.time()
-            if not self.auth_token or (current_time - self.token_timestamp) > 300:  # Refresh every 5 min
-                self.auth_token = self._get_auth_token_sync()
-                self.token_timestamp = current_time
+            is_auth_expired = (current_time - self.token_timestamp) > 600 # 10 minutes
+            if not self.auth_token or is_auth_expired:
+                logger.info("Fetching fresh HLTB auth data...")
+                auth_data = self._get_auth_data_sync()
+                if auth_data:
+                    self.auth_token = auth_data["token"]
+                    self.hp_key = auth_data["hp_key"]
+                    self.hp_val = auth_data["hp_val"]
+                    self.token_timestamp = current_time
+                else:
+                    logger.error("Failed to get HLTB auth data")
+                    return None
 
-            if not self.auth_token:
-                logger.error("Could not get HLTB auth token")
-                return None
-
-            # Build headers - Accept: application/json is important!
+            # Build headers with dynamic auth values
             headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json",
                 "User-Agent": self.user_agent,
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Prefer": "safe",
+                "Accept-Encoding": "gzip, deflate",
                 "Referer": f"{self.base_url}/",
-                "Origin": self.base_url,
+                "Content-Type": "application/json",
                 "x-auth-token": self.auth_token,
+                "x-hp-key": self.hp_key,
+                "x-hp-val": self.hp_val,
+                "Origin": self.base_url,
+                "DNT": "1",
+                "Sec-GPC": "1",
+                "Connection": "keep-alive",
+                "Cookie": self.base_cookie,
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+                "Priority": "u=4",
+                "Pragma": "no-cache",
+                "Cache-Control": "no-cache",
             }
 
             # Sanitize game name for better search matching
             sanitized_name = self._sanitize_game_name(game_name)
 
-            # HLTB API payload
+            # HLTB API payload matching the working example
             payload = {
                 "searchType": "games",
                 "searchTerms": sanitized_name.split(),
@@ -126,7 +175,7 @@ class HLTBService:
                         "platform": "",
                         "sortCategory": "popular",
                         "rangeCategory": "main",
-                        "rangeTime": {"min": 0, "max": 0},
+                        "rangeTime": {"min": None, "max": None},
                         "gameplay": {"perspective": "", "flow": "", "genre": "", "difficulty": ""},
                         "rangeYear": {"min": "", "max": ""},
                         "modifier": ""
@@ -136,16 +185,27 @@ class HLTBService:
                     "filter": "",
                     "sort": 0,
                     "randomizer": 0
-                }
+                },
+                "useCache": True,
+                self.hp_key: self.hp_val
             }
 
             data = json.dumps(payload).encode('utf-8')
-            url = f"{self.base_url}/api/finder"
+            url = f"{self.base_url}/api/bleed"
 
             req = urllib.request.Request(url, data=data, headers=headers, method='POST')
 
             with urllib.request.urlopen(req, timeout=15, context=SSL_CONTEXT) as response:
-                result = json.loads(response.read().decode('utf-8'))
+                raw_data = response.read()
+                
+                # Handle compression based on Content-Encoding header
+                content_encoding = response.headers.get('Content-Encoding', '').lower()
+                if 'gzip' in content_encoding:
+                    decoded_data = gzip.decompress(raw_data)
+                else:
+                    decoded_data = raw_data
+                
+                result = json.loads(decoded_data.decode('utf-8'))
 
             games = result.get("data", [])
             if not games:
@@ -183,9 +243,16 @@ class HLTBService:
                 "hltb_url": f"https://howlongtobeat.com/game/{best_match.get('game_id')}"
             }
 
+        except urllib.error.HTTPError as e:
+            logger.error(f"HLTB HTTP error: {e.code} - {e.reason}")
+            if hasattr(e, 'read'):
+                try:
+                    error_body = e.read().decode('utf-8')
+                    logger.error(f"  Response: {error_body[:500]}")
+                except:
+                    pass
         except Exception as e:
             logger.error(f"HLTB search error: {e}")
-            return None
 
     async def search_game(self, game_name: str) -> Optional[Dict[str, Any]]:
         """Search HLTB for game completion times"""
