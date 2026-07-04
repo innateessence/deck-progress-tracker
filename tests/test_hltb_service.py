@@ -12,6 +12,17 @@ from pathlib import Path
 plugin_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(plugin_dir / "py_modules"))
 
+# Patch `import decky` to be a no-op to avoid import errors in the test environment
+from unittest.mock import MagicMock
+import logging
+
+mock_decky = MagicMock()
+mock_decky.logger = logging.getLogger()
+
+# Inject the mock decky module into sys.modules before importing hltb_service
+import sys
+sys.modules['decky'] = mock_decky
+
 from hltb_service import HLTBService
 
 

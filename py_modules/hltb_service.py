@@ -12,7 +12,6 @@ import urllib.error
 import gzip
 from typing import Optional, Dict, Any, List
 from difflib import SequenceMatcher
-import logging
 
 # Create SSL context that doesn't verify certificates (Steam Deck may have cert issues)
 SSL_CONTEXT = ssl.create_default_context()
@@ -20,10 +19,9 @@ SSL_CONTEXT.check_hostname = False
 SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 # Use Decky's built-in logger
-# import decky
-# logger = decky.logger
+import decky
+logger = decky.logger
 
-logger = logging.getLogger(__name__)
 
 class HLTBService:
     def __init__(self):
