@@ -138,7 +138,7 @@ class HLTBService:
                 "Accept": "*/*",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Prefer": "safe",
-                "Accept-Encoding": "gzip, deflate",
+                "Accept-Encoding": "gzip",
                 "Referer": f"{self.base_url}/",
                 "Content-Type": "application/json",
                 "x-auth-token": self.auth_token,
