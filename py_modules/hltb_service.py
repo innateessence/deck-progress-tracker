@@ -30,17 +30,16 @@ class HLTBService:
         # Use Firefox User-Agent to match the working example
         self.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0"
         
-        # Cookie from get-auth example (contains session tokens)
-        self.base_cookie = "OptanonConsent=isGpcEnabled=1&datestamp=Sat+Jul+04+2026+15%3A29%3A08+GMT-0700+(Pacific+Daylight+Time)&version=202604.2.0&consentId=0811192f-59da-4c3c-aef1-8e5208f252f8&GPPCookiesCount=1&groups=C0001%3A1%2CC0002%3A1%2COSSTA_BG%3A0%2CC0004%3A0&crTime=1783204148972&genVendors=&landingPath=NotLandingPage; OTGPPConsent=DBABLA~BVQVAAAAAACA.YA; usprivacy=1YYY; opt_out=1; zd_core_lialready=true; OptanonAlertBoxClosed=2026-07-04T22:29:08.641Z"
-        
-        # Dynamic auth values (will be fetched from API)
+        # Dynamic auth values (fetched from API on first use)
         self.auth_token = None
         self.hp_key = None
         self.hp_val = None
         self.token_timestamp = 0
 
     def _get_auth_data_sync(self) -> Optional[Dict[str, str]]:
-        """Get dynamic auth data from HLTB init endpoint"""
+        """Get dynamic auth data from HLTB init endpoint.
+        
+        HLTB uses token-based authentication - no cookies required."""
         try:
             timestamp = int(time.time() * 1000)
             init_url = f"{self.base_url}/api/bleed/init?t={timestamp}"
@@ -51,7 +50,7 @@ class HLTBService:
                 "Accept-Language": "en-US,en;q=0.9",
                 "Prefer": "safe",
                 "Referer": f"{self.base_url}/",
-                "Cookie": self.base_cookie,
+                # HLTB uses token auth, no cookie needed
                 "DNT": "1",
                 "Sec-GPC": "1",
                 "Connection": "keep-alive",
@@ -106,7 +105,7 @@ class HLTBService:
         for suffix in suffixes_to_remove:
             result = re.sub(suffix, '', result, flags=re.IGNORECASE)
 
-        # Replace hyphens and colons with spaces (e.g., "Brothers - A Tale" -> "Brothers A Tale")
+        # Replace hyphens and colons with spaces
         result = re.sub(r'[-:]+', ' ', result)
         # Remove other special characters but keep alphanumeric and spaces
         result = re.sub(r'[^\w\s]', '', result)
@@ -120,7 +119,7 @@ class HLTBService:
         try:
             # Get fresh auth data if not available or expired (refresh every 10 minutes)
             current_time = time.time()
-            is_auth_expired = (current_time - self.token_timestamp) > 600 # 10 minutes
+            is_auth_expired = (current_time - self.token_timestamp) > 600
             if not self.auth_token or is_auth_expired:
                 logger.info("Fetching fresh HLTB auth data...")
                 auth_data = self._get_auth_data_sync()
@@ -133,7 +132,7 @@ class HLTBService:
                     logger.error("Failed to get HLTB auth data")
                     return None
 
-            # Build headers with dynamic auth values
+            # Build headers with dynamic auth values (no cookie needed)
             headers = {
                 "User-Agent": self.user_agent,
                 "Accept": "*/*",
@@ -145,11 +144,10 @@ class HLTBService:
                 "x-auth-token": self.auth_token,
                 "x-hp-key": self.hp_key,
                 "x-hp-val": self.hp_val,
-                "Origin": self.base_url,
+                # HLTB uses token auth, no cookie required
                 "DNT": "1",
                 "Sec-GPC": "1",
                 "Connection": "keep-alive",
-                "Cookie": self.base_cookie,
                 "Sec-Fetch-Dest": "empty",
                 "Sec-Fetch-Mode": "cors",
                 "Sec-Fetch-Site": "same-origin",
@@ -161,7 +159,7 @@ class HLTBService:
             # Sanitize game name for better search matching
             sanitized_name = self._sanitize_game_name(game_name)
 
-            # HLTB API payload matching the working example
+            # HLTB API payload
             payload = {
                 "searchType": "games",
                 "searchTerms": sanitized_name.split(),
@@ -279,4 +277,3 @@ class HLTBService:
         except Exception as e:
             logger.error(f"HLTB search failed for {game_name}: {e}")
             return None
-
