@@ -18,6 +18,63 @@ import decky
 logger = decky.logger
 
 
+class RequestUtils:
+    """Utility class for making HTTP requests to HLTB."""
+    
+    def __init__(self, user_agent: str):
+        self.user_agent = user_agent
+    
+    @staticmethod
+    def _create_ssl_context() -> ssl.SSLContext:
+        """Create SSL context without certificate verification."""
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
+
+    def make_request(self, url: str, data: Optional[bytes] = None, 
+                     method: str = "GET", extra_headers: Dict[str, str] = None) -> bytes:
+        """Make HTTP request to HLTB.
+        
+        Args:
+            url: The URL to request
+            data: Request body for POST requests
+            method: HTTP method (GET or POST)
+            extra_headers: Additional headers to include
+            
+        Returns:
+            Raw response bytes
+        """
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Prefer": "safe",
+            "Referer": "https://howlongtobeat.com/",
+            "Connection": "keep-alive",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+        }
+        
+        if extra_headers:
+            headers.update(extra_headers)
+        
+        req = Request(url, data=data, headers=headers, method=method)
+        
+        ssl_context = self._create_ssl_context()
+        
+        with urlopen(req, timeout=15, context=ssl_context) as response:
+            raw_data = response.read()
+            
+            # Handle compression based on Content-Encoding header
+            content_encoding = response.headers.get('Content-Encoding', '').lower()
+            if 'gzip' in content_encoding:
+                return gzip.decompress(raw_data)
+            else:
+                return raw_data
+
+
 class HLTBService:
     """Service for fetching game completion times from HowLongToBeat.com"""
     
@@ -34,14 +91,9 @@ class HLTBService:
         self.hp_key = None
         self.hp_val = None
         self.token_timestamp = 0
-    
-    @staticmethod
-    def _create_ssl_context() -> ssl.SSLContext:
-        """Create SSL context without certificate verification."""
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        return context
+        
+        # Initialize request utils with user agent
+        self._request_utils = RequestUtils(self.user_agent)
 
     def _get_auth_data_sync(self) -> Optional[Dict[str, str]]:
         """Get dynamic auth data from HLTB init endpoint.
@@ -52,7 +104,7 @@ class HLTBService:
         url = f"{self.base_url}/api/bleed/init?t={int(time.time() * 1000)}"
         
         try:
-            response = self._make_request(url, method="GET")
+            response = self._request_utils.make_request(url, method="GET")
             data = json.loads(response.decode('utf-8'))
             
             token = data.get('token')
@@ -102,48 +154,6 @@ class HLTBService:
         result = re.sub(r'\s+', ' ', result).strip()
         
         return result
-
-    def _make_request(self, url: str, data: Optional[bytes] = None, 
-                      method: str = "GET", extra_headers: Dict[str, str] = None) -> bytes:
-        """Make HTTP request to HLTB.
-        
-        Args:
-            url: The URL to request
-            data: Request body for POST requests
-            method: HTTP method (GET or POST)
-            extra_headers: Additional headers to include
-            
-        Returns:
-            Raw response bytes
-        """
-        headers = {
-            "User-Agent": self.user_agent,
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Prefer": "safe",
-            "Referer": f"{self.base_url}/",
-            "Connection": "keep-alive",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-        }
-        
-        if extra_headers:
-            headers.update(extra_headers)
-        
-        req = Request(url, data=data, headers=headers, method=method)
-        
-        ssl_context = self._create_ssl_context()
-        
-        with urlopen(req, timeout=15, context=ssl_context) as response:
-            raw_data = response.read()
-            
-            # Handle compression based on Content-Encoding header
-            content_encoding = response.headers.get('Content-Encoding', '').lower()
-            if 'gzip' in content_encoding:
-                return gzip.decompress(raw_data)
-            else:
-                return raw_data
 
     def _search_sync(self, game_name: str) -> Optional[Dict[str, Any]]:
         """Synchronous HLTB search using /api/bleed endpoint
@@ -212,7 +222,7 @@ class HLTBService:
         url = f"{self.base_url}/api/bleed"
         
         try:
-            response_data = self._make_request(
+            response_data = self._request_utils.make_request(
                 url, 
                 data=json.dumps(payload).encode('utf-8'),
                 method="POST",
